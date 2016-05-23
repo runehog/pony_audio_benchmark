@@ -231,6 +231,7 @@ int init_output_stream(unsigned long frames_per_buffer,
   }
   const PaHostApiInfo* api_info = Pa_GetHostApiInfo(device_info->hostApi);
   printf("using device '%s', API '%s'\n", device_info->name, api_info->name);
+  printf("latency: %lf\n", device_info->defaultLowOutputLatency);
   result = Pa_OpenStream(
     &stream,
     NULL,
