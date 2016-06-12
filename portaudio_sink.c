@@ -7,6 +7,10 @@
 #include <portaudio.h>
 #include <pthread.h>
 
+#if __APPLE__
+#include <dispatch/dispatch.h>
+#endif
+
 #define FAKE_AUDIO 0
 #define USE_PRODUCE_THREAD 1
 #define DETECT_UNDERRUNS 0
@@ -23,7 +27,11 @@ static size_t g_buffer_count = 0;
 static size_t g_next_buffer = 0;
 
 static pthread_t g_produce_thread;
+#if __APPLE__
+static dispatch_semaphore_t g_produce_sem;
+#else
 static sem_t g_produce_sem;
+#endif
 static double g_produce_timestamp;
 static uint32_t g_produce_underruns;
 
@@ -36,6 +44,9 @@ static pony_output_add_buffer_cb g_add_buffer_cb = NULL;
 static pony_output_preroll_cb g_preroll_cb = NULL;
 static pony_output_produce_cb g_produce_cb = NULL;
 static void* g_pony_object;
+
+// registers this thread with the pony runtime.
+extern void pony_register_thread();
 
 void init_buffers(unsigned long buffer_count) {
   int i;
@@ -71,10 +82,15 @@ void* produce_thread(void* unused) {
   pony_register_thread();
   uint32_t underruns = g_produce_underruns;
   while (1) {
+#if __APPLE__
+    int wait_result = dispatch_semaphore_wait(
+      g_produce_sem, DISPATCH_TIME_FOREVER);
+#else
     int wait_result = sem_wait(&g_produce_sem);
+#endif
     if (wait_result != 0) {
       printf("Producer thread done\n");
-      return;
+      return NULL;
     }
     if (g_produce_underruns > underruns) {
       printf("%d underruns\n", g_produce_underruns - underruns);
@@ -82,13 +98,18 @@ void* produce_thread(void* unused) {
     }
     (*g_produce_cb)(g_pony_object, g_produce_timestamp);
   }
+  return NULL;
 }
 
 void init_produce_thread() {
   int result;
   g_produce_timestamp = 0;
+#if __APPLE__
+  g_produce_sem = dispatch_semaphore_create(0);
+#else
   result = sem_init(&g_produce_sem, 0, 0);
   assert(result == 0);
+#endif
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   result = pthread_create(&g_produce_thread, &attr, &produce_thread, NULL);
@@ -111,7 +132,11 @@ void* fakeaudio_thread(void* unused) {
       puts(".");
     }
 #if USE_PRODUCE_THREAD
+#if __APPLE__
+    dispatch_semaphore_signal(g_produce_sem);
+#else
     sem_post(&g_produce_sem);
+#endif
 #else
     (*g_produce_cb)(g_pony_object, g_produce_timestamp);
 #endif
@@ -144,7 +169,7 @@ int output_stream_cb(const void* input,
     pony_register_thread();
   }
 #endif
-  assert(frames_per_buffer == g_frames_per_buffer); 
+  assert(frames_per_buffer == g_frames_per_buffer);
 
 #if DETECT_UNDERRUNS
   if (g_buffers[g_next_buffer].ready) {
@@ -153,7 +178,11 @@ int output_stream_cb(const void* input,
     g_buffers[g_next_buffer].ready = 0;
     g_produce_timestamp = time_info->outputBufferDacTime;
 #if USE_PRODUCE_THREAD
+#if __APPLE__
+    dispatch_semaphore_signal(g_produce_sem);
+#else
     sem_post(&g_produce_sem);
+#endif
 #else
     (*g_produce_cb)(g_pony_object, g_produce_timestamp);
 #endif
@@ -284,4 +313,3 @@ int stop_output_stream() {
   return result;
 #endif
 }
-
